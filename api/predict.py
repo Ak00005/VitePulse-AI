@@ -21,12 +21,6 @@ import numpy as np
 
 # Optional dependencies imported safely
 try:
-    import pandas as pd
-    HAS_PANDAS = True
-except ImportError:
-    HAS_PANDAS = False
-
-try:
     import shap
     HAS_SHAP = True
 except ImportError:
@@ -449,10 +443,7 @@ def predict_and_explain(input_data):
     }
 
     # Format input for model
-    if HAS_PANDAS:
-        X_sample = pd.DataFrame([row], columns=feature_order)
-    else:
-        X_sample = np.array([[row[col] for col in feature_order]], dtype=float)
+    X_sample = np.array([[row[col] for col in feature_order]], dtype=float)
 
     # Scikit-Learn Model Inference
     pred_class = int(model.predict(X_sample)[0])
