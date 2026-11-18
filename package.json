@@ -1,0 +1,36 @@
+{
+  "name": "lifestyle-ai-prediction-project",
+  "version": "1.0.0",
+  "description": "Lifestyle-Based Health Outcome Prediction using Explainable AI (XAI), React, Express, and MongoDB",
+  "main": "Backend/index.js",
+  "scripts": {
+    "postinstall": "npm --prefix Frontend/lifestyleprediction install",
+    "build": "npm --prefix Frontend/lifestyleprediction run build",
+    "start": "node Backend/index.js",
+    "start:backend": "npm --prefix Backend start",
+    "dev": "npm --prefix Frontend/lifestyleprediction run dev",
+    "dev:backend": "npm --prefix Backend run dev",
+    "dev:frontend": "npm --prefix Frontend/lifestyleprediction run dev",
+    "build:frontend": "npm --prefix Frontend/lifestyleprediction run build"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.4",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.10.3"
+  },
+  "keywords": [
+    "react",
+    "express",
+    "mongodb",
+    "machine-learning",
+    "explainable-ai",
+    "shap",
+    "gradient-boosting",
+    "vercel"
+  ],
+  "author": "",
+  "license": "MIT"
+}

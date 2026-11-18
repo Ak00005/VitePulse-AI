@@ -1,0 +1,57 @@
+# =================================================================
+# VitaPulse AI — Docker Ignore Rules
+# =================================================================
+
+# Git and Vercel artifacts
+.git/
+.github/
+.vercel/
+
+# Dependencies and caches (will be installed inside container)
+node_modules/
+Backend/node_modules/
+Frontend/lifestyleprediction/node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# Secrets and environment files (NEVER BAKE SECRETS INTO IMAGES)
+.env
+.env.*
+*.env
+Backend/.env
+Frontend/lifestyleprediction/.env*
+!.env.example
+!Backend/.env.example
+
+# Raw Training Datasets & Heavy Jupyter Notebooks
+ML_Model/Dataset/
+ML_Model/Notebook/
+ML_Model/Images/
+*.csv
+!ML_Model/Results/model_comparison.csv
+!api/models/model_comparison.csv
+
+# Academic Reports and Generated PDFs
+build_report/
+report_assets/
+*.pdf
+compile_report.js
+HCI_Project_Report.md
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

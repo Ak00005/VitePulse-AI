@@ -1,0 +1,34 @@
+# Vercel Deployment Ignore Rules
+# Keeps the serverless function deployment package lean and well under the 250MB limit
+
+# Large training datasets and notebook artifacts
+ML_Model/Dataset/
+ML_Model/Images/
+ML_Model/Notebook/
+ML_Model/README.md
+ML_Model/LICENSE
+*.csv
+!ML_Model/Results/model_comparison.csv
+!api/models/model_comparison.csv
+
+# Heavy report generators and PDFs
+build_report/
+report_assets/
+*.pdf
+compile_report.js
+HCI_Project_Report.md
+
+# Development and editor artifacts
+.env
+.env.*
+*.env
+Dockerfile*
+.dockerignore
+docker-compose*
+.vscode/
+.idea/
+.git/
+*.log
+.DS_Store
+Thumbs.db
+

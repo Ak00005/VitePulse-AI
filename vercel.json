@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "buildCommand": "npm --prefix Frontend/lifestyleprediction run build",
+  "outputDirectory": "Frontend/lifestyleprediction/dist",
+  "functions": {
+    "api/predict.py": {
+      "maxDuration": 60
+    },
+    "api/index.js": {
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/predict",
+      "destination": "/api/predict.py"
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+

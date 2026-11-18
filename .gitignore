@@ -1,0 +1,65 @@
+# Environment files & secrets (NEVER COMMIT)
+.env
+.env.*
+*.env
+Backend/.env
+Frontend/lifestyleprediction/.env
+Frontend/lifestyleprediction/.env.*
+!.env.example
+!Backend/.env.example
+!Frontend/lifestyleprediction/.env.example
+
+# Dependencies
+node_modules/
+Backend/node_modules/
+Frontend/lifestyleprediction/node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+dist-ssr/
+Frontend/lifestyleprediction/dist/
+build/
+
+# Vercel deployment artifacts
+.vercel/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Large training datasets (not required for production inference)
+ML_Model/Dataset/
+*.csv
+!ML_Model/Results/model_comparison.csv
+!api/models/model_comparison.csv
+
+# Generated Academic Reports & Heavy Assets
+build_report/
+report_assets/
+*.pdf
+compile_report.js
+HCI_Project_Report.md
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor directories
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
