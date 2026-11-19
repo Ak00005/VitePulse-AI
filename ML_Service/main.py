@@ -1,77 +1,37 @@
 """
-VitaPulse AI — Serverless Prediction & Explainable AI (SHAP) Function
-Designed for public production deployment on Vercel (@vercel/python runtime).
+VitaPulse AI — Standalone Python Machine Learning Inference & SHAP Service
+Decoupled microservice for Gradient Boosting disease risk prediction and Explainable AI.
 
-Preserves exact ML inference pipeline, SHAP tree explainer, deterministic clinical
-parameter estimation, personalized lifestyle recommendations, and optional JWT/MongoDB
-assessment history persistence.
+Endpoints:
+  GET  /health   -> Healthcheck probe
+  POST /predict  -> Executes ML model inference + SHAP TreeExplainer explanations
 """
 
-import sys
 import os
-import json
+import sys
 import warnings
-from http.server import BaseHTTPRequestHandler
-from datetime import datetime, timezone
+from typing import Dict, Any
+from contextlib import asynccontextmanager
 
 warnings.filterwarnings('ignore')
 
 import joblib
 import numpy as np
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
-# Optional dependencies imported safely
 try:
     import shap
     HAS_SHAP = True
 except ImportError:
     HAS_SHAP = False
 
-try:
-    import jwt
-    HAS_JWT = True
-except ImportError:
-    HAS_JWT = False
-
-try:
-    from pymongo import MongoClient
-    from bson import ObjectId
-    HAS_MONGO = True
-except ImportError:
-    HAS_MONGO = False
-
-# ==================== ENVIRONMENT CONFIGURATION ====================
-JWT_SECRET = os.environ.get('JWT_SECRET', 'lifestyle_ai_jwt_secret_key_2026')
-MONGO_URI = os.environ.get('MONGODB_URI') or os.environ.get('MONGO_URI')
-
-# Global cached database client across serverless warm invocations
-_mongo_client = None
-
-def get_mongo_db():
-    global _mongo_client
-    uri = os.environ.get('MONGODB_URI') or os.environ.get('MONGO_URI')
-    if not HAS_MONGO or not uri:
-        return None
-    try:
-        if _mongo_client is None:
-            _mongo_client = MongoClient(
-                uri,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=5000
-            )
-        db_name = None
-        try:
-            db_name = _mongo_client.get_default_database().name
-        except Exception:
-            db_name = 'lifestyle_ai'
-        return _mongo_client[db_name or 'lifestyle_ai']
-    except Exception as e:
-        print(f"MongoDB connection warning: {e}", file=sys.stderr)
-        return None
-
 # ==================== MODEL ARTIFACT LOADER ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 POSSIBLE_PATHS = [
     os.path.join(BASE_DIR, 'models'),
+    os.path.join(BASE_DIR, '..', 'api', 'models'),
     os.path.join(BASE_DIR, '..', 'ML_Model', 'Results'),
     os.path.join(BASE_DIR, 'ML_Model', 'Results')
 ]
@@ -79,9 +39,11 @@ POSSIBLE_PATHS = [
 _cached_model = None
 _cached_gender_enc = None
 _cached_target_enc = None
+_cached_explainer = None
+_cached_base_value = 0.0
 
 def load_artifacts():
-    global _cached_model, _cached_gender_enc, _cached_target_enc
+    global _cached_model, _cached_gender_enc, _cached_target_enc, _cached_explainer, _cached_base_value
     if _cached_model is not None:
         return _cached_model, _cached_gender_enc, _cached_target_enc
 
@@ -104,15 +66,22 @@ def load_artifacts():
     _cached_gender_enc = joblib.load(gender_path) if os.path.exists(gender_path) else None
     _cached_target_enc = joblib.load(target_path) if os.path.exists(target_path) else None
 
+    # Pre-initialize SHAP TreeExplainer once at startup
+    if HAS_SHAP and _cached_explainer is None:
+        try:
+            _cached_explainer = shap.TreeExplainer(_cached_model)
+            dummy_sample = np.zeros((1, 15), dtype=float)
+            dummy_res = _cached_explainer(dummy_sample)
+            if hasattr(dummy_res, 'base_values'):
+                _cached_base_value = float(dummy_res.base_values[0])
+            print("SHAP TreeExplainer pre-warmed successfully.", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to pre-warm SHAP TreeExplainer: {e}", file=sys.stderr)
+
     return _cached_model, _cached_gender_enc, _cached_target_enc
 
 # ==================== DETERMINISTIC CLINICAL ESTIMATOR ====================
-def estimate_clinical_parameters(input_data):
-    """
-    Deterministically derives model-supporting internal parameters:
-    systolic_bp, diastolic_bp, resting_hr, cholesterol.
-    Identical logic to clinicalEstimator.js.
-    """
+def estimate_clinical_parameters(input_data: Dict[str, Any]) -> Dict[str, Any]:
     try:
         age = float(input_data.get('age', 40))
     except (ValueError, TypeError):
@@ -260,7 +229,7 @@ def estimate_clinical_parameters(input_data):
     }
 
 # ==================== LIFESTYLE RECOMMENDATIONS ====================
-def get_recommendations(data, shap_dict, risk_score):
+def get_recommendations(data: Dict[str, Any], shap_dict: Dict[str, float], risk_score: float):
     recs = []
 
     systolic = data.get('systolic_bp', 120)
@@ -397,8 +366,8 @@ def get_recommendations(data, shap_dict, risk_score):
 
     return recs
 
-# ==================== MAIN PREDICTION & SHAP CORE ====================
-def predict_and_explain(input_data):
+# ==================== MAIN INFERENCE & SHAP ENGINE ====================
+def predict_and_explain(input_data: Dict[str, Any]) -> Dict[str, Any]:
     model, gender_enc, _ = load_artifacts()
 
     # Deterministically calculate clinical parameters
@@ -442,7 +411,7 @@ def predict_and_explain(input_data):
         'family_history': int(input_data.get('family_history', 0))
     }
 
-    # Format input for model
+    # Format input 2D NumPy array
     X_sample = np.array([[row[col] for col in feature_order]], dtype=float)
 
     # Scikit-Learn Model Inference
@@ -453,15 +422,18 @@ def predict_and_explain(input_data):
 
     # SHAP Explanations
     shap_factors = []
-    base_val = 0.0
+    base_val = _cached_base_value
     shap_computed = False
 
+    global _cached_explainer
     if HAS_SHAP:
         try:
-            explainer = shap.TreeExplainer(model)
-            shap_res = explainer(X_sample)
+            if _cached_explainer is None:
+                _cached_explainer = shap.TreeExplainer(model)
+            shap_res = _cached_explainer(X_sample)
             shap_vals = shap_res.values[0]
-            base_val = float(shap_res.base_values[0]) if hasattr(shap_res, 'base_values') else 0.0
+            if hasattr(shap_res, 'base_values'):
+                base_val = float(shap_res.base_values[0])
 
             values_list = [row[col] for col in feature_order]
             for col, sval, ival in zip(feature_order, shap_vals, values_list):
@@ -476,10 +448,9 @@ def predict_and_explain(input_data):
                 })
             shap_computed = True
         except Exception as e:
-            print(f"SHAP explainer warning (using feature importances): {e}", file=sys.stderr)
+            print(f"SHAP TreeExplainer error (using feature importance fallback): {e}", file=sys.stderr)
 
     if not shap_computed:
-        # Fallback to feature importance weighting if SHAP fails or is missing
         values_list = [row[col] for col in feature_order]
         importances = getattr(model, 'feature_importances_', [1.0 / len(feature_order)] * len(feature_order))
         for col, imp, ival in zip(feature_order, importances, values_list):
@@ -493,7 +464,6 @@ def predict_and_explain(input_data):
                 'impact': round(float(imp), 4)
             })
 
-    # Sort factors by absolute impact
     shap_factors.sort(key=lambda x: x['impact'], reverse=True)
 
     # Risk categorization
@@ -512,7 +482,6 @@ def predict_and_explain(input_data):
     CLINICAL_FEATURES = {'systolic_bp', 'diastolic_bp', 'resting_hr', 'cholesterol'}
     user_shap_factors = [f for f in shap_factors if f['feature'] not in CLINICAL_FEATURES]
 
-    # Sanitize inputs for user-facing response
     sanitized_inputs = dict(row)
     for cf in CLINICAL_FEATURES:
         sanitized_inputs.pop(cf, None)
@@ -536,166 +505,65 @@ def predict_and_explain(input_data):
         'provenance': clinical_estimate['provenance']
     }
 
-# ==================== AUTHENTICATION & MONGODB HANDLER ====================
-def extract_user_id(auth_header):
-    if not auth_header or not auth_header.startswith('Bearer ') or not HAS_JWT:
-        return None
-    token = auth_header.split(' ')[1].strip()
-    secret = os.environ.get('JWT_SECRET', 'lifestyle_ai_jwt_secret_key_2026')
-    try:
-        decoded = jwt.decode(token, secret, algorithms=['HS256'])
-        return decoded.get('id')
-    except Exception:
-        return None
+# ==================== FASTAPI APP LIFECYCLE ====================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Preload model artifacts and warm up SHAP explainer on startup
+    load_artifacts()
+    yield
 
-def save_assessment_record(user_id, result_data):
-    db = get_mongo_db()
-    if db is None or not user_id:
-        return None
+app = FastAPI(
+    title="VitaPulse AI — ML Inference Service",
+    version="1.0.0",
+    description="Dedicated microservice for Gradient Boosting disease risk inference & SHAP explainability",
+    lifespan=lifespan
+)
 
-    try:
-        raw_inputs = result_data.get('raw_inputs_with_vitals', {})
-        provenance = result_data.get('provenance', {})
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-        doc = {
-            'userId': ObjectId(user_id) if ObjectId.is_valid(user_id) else user_id,
-            'guestId': None,
-            'inputs': {
-                'age': raw_inputs.get('age', 40),
-                'gender': 'Male' if raw_inputs.get('gender') == 1 else 'Female',
-                'bmi': raw_inputs.get('bmi', 24.5),
-                'daily_steps': raw_inputs.get('daily_steps', 7500),
-                'sleep_hours': raw_inputs.get('sleep_hours', 7.0),
-                'water_intake_l': raw_inputs.get('water_intake_l', 2.5),
-                'calories_consumed': raw_inputs.get('calories_consumed', 2200),
-                'smoker': raw_inputs.get('smoker', 0),
-                'alcohol': raw_inputs.get('alcohol', 0),
-                'resting_hr': raw_inputs.get('resting_hr', 70),
-                'systolic_bp': raw_inputs.get('systolic_bp', 120),
-                'diastolic_bp': raw_inputs.get('diastolic_bp', 80),
-                'cholesterol': raw_inputs.get('cholesterol', 190),
-                'family_history': raw_inputs.get('family_history', 0)
-            },
-            'provenance': provenance,
-            'prediction': {
-                'disease_risk_detected': result_data.get('disease_risk_detected'),
-                'prediction_code': result_data.get('prediction'),
-                'risk_score': result_data.get('risk_score'),
-                'safe_score': result_data.get('safe_score'),
-                'risk_level': result_data.get('risk_level'),
-                'risk_color': result_data.get('risk_color'),
-                'base_value': result_data.get('base_value')
-            },
-            'shap_factors': result_data.get('shap_factors', []),
-            'top_risk_drivers': result_data.get('top_risk_drivers', []),
-            'top_protective_factors': result_data.get('top_protective_factors', []),
-            'recommendations': result_data.get('recommendations', []),
-            'createdAt': datetime.now(timezone.utc)
+# ==================== SERVICE ENDPOINTS ====================
+@app.get("/health")
+async def health():
+    """Simple healthcheck probe."""
+    return {"status": "ok"}
+
+@app.get("/")
+async def root():
+    return {
+        "service": "VitaPulse AI ML Inference Service",
+        "status": "online",
+        "endpoints": {
+            "health": "/health",
+            "predict": "POST /predict"
         }
-
-        insert_result = db['assessments'].insert_one(doc)
-        return str(insert_result.inserted_id)
-    except Exception as e:
-        print(f"Failed to persist assessment to MongoDB: {e}", file=sys.stderr)
-        return None
-
-# ==================== VERCEL HTTP REQUEST HANDLER ====================
-class handler(BaseHTTPRequestHandler):
-    """
-    Vercel Serverless Function entry point.
-    Handles /api/predict requests over HTTP.
-    """
-    def _send_cors_headers(self):
-        origin = self.headers.get('Origin', '*')
-        self.send_header('Access-Control-Allow-Origin', origin)
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-guest-id')
-        self.send_header('Access-Control-Allow-Credentials', 'true')
-
-    def do_OPTIONS(self):
-        self.send_response(204)
-        self._send_cors_headers()
-        self.end_headers()
-
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self._send_cors_headers()
-        self.end_headers()
-        res = {
-            'status': 'online',
-            'service': 'VitaPulse AI Prediction & XAI API (Vercel Serverless Python)',
-            'endpoint': '/api/predict',
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }
-        self.wfile.write(json.dumps(res).encode('utf-8'))
-
-    def do_POST(self):
-        try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > 0:
-                raw_body = self.rfile.read(content_length).decode('utf-8')
-                payload = json.loads(raw_body)
-            else:
-                payload = {}
-
-            # Execute ML model + SHAP pipeline
-            result = predict_and_explain(payload)
-
-            # Check authentication
-            auth_header = self.headers.get('Authorization')
-            user_id = extract_user_id(auth_header)
-
-            saved_id = None
-            is_saved = False
-            is_guest = True
-
-            if user_id:
-                saved_id = save_assessment_record(user_id, result)
-                if saved_id:
-                    is_saved = True
-                    is_guest = False
-
-            # Remove raw internal tracking before output
-            result.pop('raw_inputs_with_vitals', None)
-
-            response_payload = {
-                **result,
-                'assessmentId': saved_id,
-                'savedAt': datetime.now(timezone.utc).isoformat() if is_saved else None,
-                'isSaved': is_saved,
-                'isGuest': is_guest
-            }
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self._send_cors_headers()
-            self.end_headers()
-            self.wfile.write(json.dumps(response_payload).encode('utf-8'))
-
-        except Exception as exc:
-            print(f"Error handling /api/predict: {exc}", file=sys.stderr)
-            self.send_response(500)
-            self.send_header('Content-Type', 'application/json')
-            self._send_cors_headers()
-            self.end_headers()
-            err_res = {
-                'error': str(exc) if os.environ.get('NODE_ENV') != 'production' else 'An error occurred during prediction calculation.'
-            }
-            self.wfile.write(json.dumps(err_res).encode('utf-8'))
-
-    def log_message(self, format, *args):
-        # Suppress verbose standard HTTP request logs
-        return
-
-# ==================== CLI / TEST RUNNER ====================
-if __name__ == '__main__':
-    test_data = {
-        'age': 45, 'gender': 'Male', 'bmi': 28.5, 'daily_steps': 5000,
-        'sleep_hours': 6.0, 'water_intake_l': 2.0, 'calories_consumed': 2600,
-        'smoker': 1, 'alcohol': 1, 'family_history': 1
     }
-    print("Testing api/predict.py locally...")
-    res = predict_and_explain(test_data)
-    print("Prediction Result:")
-    print(json.dumps(res, indent=2))
+
+@app.post("/predict")
+async def predict_endpoint(request: Request):
+    """
+    Receives lifestyle & biometric input payload.
+    Executes Gradient Boosting inference + SHAP TreeExplainer.
+    Returns standardized prediction and explanation dictionary.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    try:
+        result = predict_and_explain(body)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8000))
+    host = os.environ.get('HOST', '0.0.0.0')
+    print(f"Starting VitaPulse AI ML Service on http://{host}:{port}")
+    uvicorn.run("main:app", host=host, port=port, reload=False)

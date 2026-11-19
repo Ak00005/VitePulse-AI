@@ -7,22 +7,40 @@ const Assessment = require('../models/AssessmentSchema');
 const { verifyToken, optionalToken } = require('../middleware/auth');
 const { estimateClinicalParameters } = require('../utils/clinicalEstimator');
 
-// Helper to execute Python ML Bridge (supports both local child_process spawn and HTTP serverless function)
+// Helper to execute Python ML Inference (calls external Python ML service via HTTP, or local script fallback)
 const runMLInference = async (inputPayload) => {
-    // If an external or Vercel Python prediction endpoint is configured
-    if (process.env.PYTHON_PREDICT_URL) {
-        const response = await fetch(process.env.PYTHON_PREDICT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(inputPayload)
-        });
-        const data = await response.json();
-        if (!response.ok || data.error) {
-            throw new Error(data.error || 'Serverless ML inference failed');
+    const mlBaseUrl = process.env.ML_SERVICE_URL || process.env.PYTHON_PREDICT_URL;
+
+    // 1. If an external or containerized Python ML Service URL is configured
+    if (mlBaseUrl) {
+        const endpoint = mlBaseUrl.endsWith('/predict') ? mlBaseUrl : `${mlBaseUrl.replace(/\/$/, '')}/predict`;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(inputPayload),
+                signal: controller.signal
+            });
+            clearTimeout(timeout);
+
+            const data = await response.json();
+            if (!response.ok || data.error || data.detail) {
+                throw new Error(data.error || data.detail || `ML Service returned HTTP ${response.status}`);
+            }
+            return data;
+        } catch (err) {
+            clearTimeout(timeout);
+            if (err.name === 'AbortError') {
+                throw new Error('ML inference service request timed out (15s limit reached).');
+            }
+            throw new Error(`Failed to communicate with ML service at ${endpoint}: ${err.message}`);
         }
-        return data;
     }
 
+    // 2. Fallback: Local python script execution via child_process spawn
     return new Promise((resolve, reject) => {
         const pythonScript = path.join(__dirname, '..', 'ml_bridge.py');
         const jsonString = JSON.stringify(inputPayload);

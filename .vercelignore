@@ -18,6 +18,11 @@ report_assets/
 compile_report.js
 HCI_Project_Report.md
 
+# Standalone Python ML Service & deployment artifacts (deployed separately)
+ML_Service/
+api/predict.py
+requirements.txt
+
 # Development and editor artifacts
 .env
 .env.*
